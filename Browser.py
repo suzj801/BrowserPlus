@@ -6,12 +6,22 @@ from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
 from PyQt5.QtWebEngineWidgets import *
-from configparser import ConfigParser
+from PyQt5.QtNetwork import *
 from dialogs import *
+import db
 
 APP_PATH = os.path.dirname(__file__)
 INI_FILE = os.path.join(APP_PATH, 'config.conf')
 LOADING_BACKGROUND = os.path.join(APP_PATH, 'images', 'loading_background.png')
+COOKIES_PATH = os.path.join(APP_PATH, '.cookies')
+DB_FILE = os.path.join(APP_PATH, 'database')
+SQLITEDB = db.get_db(DB_FILE)
+db.init_tables(SQLITEDB)
+if not os.path.isdir(COOKIES_PATH):
+    os.mkdir(COOKIES_PATH)
+CACHES_PATH = os.path.join(APP_PATH, '.caches')
+if not os.path.isdir(CACHES_PATH):
+    os.mkdir(CACHES_PATH)
 SEARCH_ENGINE = 'https://cn.bing.com/search?q=%s'
 
 def translate_menu(menu):
@@ -101,7 +111,6 @@ class MyWebView(QWebEngineView):
 
     @pyqtSlot()
     def on_webview_loadfinished(self):
-        print('finished')
         self.parent.loading_progress_label.setStyleSheet('background-color:transparent')
         self.parent.loading_progress_label.setFixedWidth(2)
         _load_url = self.url().url()
@@ -148,6 +157,13 @@ class Tab_Browsers(QTabWidget):
         self.tabCloseRequested.connect(self.on_close_tab)
         self.setIconSize(QSize(12, 12))
         self.currentChanged.connect(self.on_tab_changed)
+        #QWebEngineProfile 抓取cookie
+        self.webprofile = QWebEngineProfile.defaultProfile()
+        self.webprofile.setHttpCacheType(QWebEngineProfile.DiskHttpCache)
+        self.webprofile.setCachePath(CACHES_PATH)
+        self.webprofile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
+        self.webprofile.setPersistentStoragePath(COOKIES_PATH)
+        self.webprofile.cookieStore().cookieAdded.connect(self.on_cookie_added)
         self.createTab('https://www.baidu.com')
 
     def createTab(self, url=''):
@@ -172,6 +188,14 @@ class Tab_Browsers(QTabWidget):
     def on_tab_changed(self, index):
         self.parent.text_url_navigation.setText(self.currentWidget().url().url())
 
+    @pyqtSlot(QNetworkCookie)
+    def on_cookie_added(self, cookie):
+        #print(cookie.domain(), cookie.path(), cookie.name(), cookie.value())
+        db.add_cookie(cookie.domain(), str(cookie.name(), 'utf-8'), str(cookie.value(), 'utf-8'))
+
+    def createRequest(operation, request, body=None):
+        print(operation, request, body)
+
 class BrowserWindow(QMainWindow):
     def __init__(self):
         QMainWindow.__init__(self)
@@ -183,7 +207,7 @@ class BrowserWindow(QMainWindow):
         main_layout.setSpacing(0)
         main_layout.setContentsMargins(0, 0, 0, 0)
         #菜单
-        self.add_menus()
+        #self.add_menus()
         #工具栏
         toolbar_layout = QHBoxLayout()
         self.toolbar_widget = QWidget(self)
@@ -205,13 +229,8 @@ class BrowserWindow(QMainWindow):
 
         self.setCentralWidget(self.main_widget)
         #读取配置
-        self.confparser = ConfigParser()
-        if os.path.isfile(INI_FILE):
-            self.confparser.read(INI_FILE)
-        else:
-            self.confparser.add_section('main')
 
-    def add_menus(self):
+    def add_menus(self):#QWebEnginePage不再与QNetworkAccessManager交互, 暂时无法从page中抓取提交数据
         menubar = self.menuBar()
         #
         menu_webview = menubar.addMenu('浏览器')
