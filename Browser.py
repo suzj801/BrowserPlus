@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import requests
 import urllib.parse
 from PyQt5.QtCore import *
@@ -23,6 +24,7 @@ CACHES_PATH = os.path.join(APP_PATH, '.caches')
 if not os.path.isdir(CACHES_PATH):
     os.mkdir(CACHES_PATH)
 SEARCH_ENGINE = 'https://cn.bing.com/search?q=%s'
+os.environ['QTWEBENGINE_REMOTE_DEBUGGING'] = '56999'
 
 def translate_menu(menu):
     _translate = {
@@ -38,10 +40,17 @@ def translate_menu(menu):
         '&Reload': '刷新',
         'Save page': '保存',
         'View page source': '查看网页源码',
+        'Inspect': '检查',
+        'Open link in new tab': '在新选项卡中打开',
+        'Save link': '保存链接',
+        'Copy link address': '复制链接地址'
     }
+    hidden_actions = ['Open link in new window']
     for action in menu.actions():
         if action.text() in _translate:
             action.setText(_translate[action.text()])
+        if action.text() in hidden_actions:
+            action.setVisible(False)
 
 class Nav_Button(QPushButton):
     '''导航按钮'''
@@ -76,20 +85,35 @@ class MyWebView(QWebEngineView):
         self.loadFinished.connect(self.on_webview_loadfinished)
         self.page().urlChanged.connect(self.on_url_changed)
         self.page().linkHovered.connect(self.on_link_hovered)
+        #忽略js关闭窗口事件, chrome无父窗口的page无法使用js关闭窗口
+
+    def test_local_file(self, url):
+        url = urllib.parse.unquote(url)
+        if re.match('^\w:', url):
+            if os.name == 'nt':
+                return True, url.replace('\\', '//')
+            else:
+                return True, url
+        else:
+            return False, url
 
     def load(self, qurl):
         _url = qurl.url()
-        parse = urllib.parse.urlparse(_url)
-        retry_url = []
-        if not parse.scheme:
-            retry_url.append('http://'+_url)
-            retry_url.append('https://'+_url)
+        _local_file, _url = self.test_local_file(_url)
+        if _url:
+            QWebEngineView.load(self, QUrl(_url))
         else:
-            retry_url = [_url]
-        for r_url in retry_url:
-            QWebEngineView.load(self, QUrl(r_url))
-            if self.url().url() in retry_url:
-                break
+            parse = urllib.parse.urlparse(_url)
+            retry_url = []
+            if not parse.scheme:
+                retry_url.append('http://'+_url)
+                retry_url.append('https://'+_url)
+            else:
+                retry_url = [_url]
+            for r_url in retry_url:
+                QWebEngineView.load(self, QUrl(r_url))
+                if self.url().url() in retry_url:
+                    break
 
     def createWindow(self, QWebEnginePageWebWindowType):
         new_webview = self.parent.tab_browsers.createTab()
@@ -164,6 +188,7 @@ class Tab_Browsers(QTabWidget):
         self.webprofile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
         self.webprofile.setPersistentStoragePath(COOKIES_PATH)
         self.webprofile.cookieStore().cookieAdded.connect(self.on_cookie_added)
+        self.webprofile.cookieStore().cookieRemoved.connect(self.on_cookie_removed)
         self.createTab('https://www.baidu.com')
 
     def createTab(self, url=''):
@@ -187,14 +212,17 @@ class Tab_Browsers(QTabWidget):
     @pyqtSlot(int)
     def on_tab_changed(self, index):
         self.parent.text_url_navigation.setText(self.currentWidget().url().url())
+        if self.parent.debugview.isVisible():
+            self.parent.debugview.page().setInspectedPage(self.currentWidget().page())
 
     @pyqtSlot(QNetworkCookie)
     def on_cookie_added(self, cookie):
         #print(cookie.domain(), cookie.path(), cookie.name(), cookie.value())
         db.add_cookie(cookie.domain(), str(cookie.name(), 'utf-8'), str(cookie.value(), 'utf-8'))
 
-    def createRequest(operation, request, body=None):
-        print(operation, request, body)
+    @pyqtSlot(QNetworkCookie)
+    def on_cookie_removed(self, cookie):
+        db.remove_cookie(cookie.domain(), str(cookie.name(), 'utf-8'))
 
 class BrowserWindow(QMainWindow):
     def __init__(self):
@@ -223,9 +251,19 @@ class BrowserWindow(QMainWindow):
         self.loading_progress_label.setFixedWidth(2)
         self.loading_progress_label.setStyleSheet('background-color:transparent')
         main_layout.addWidget(self.loading_progress_label)
+        #调试控制台
+        self.debugview = QWebEngineView(self)
+        self.debugview.setMinimumHeight(100)
         #多选项卡浏览器
         self.tab_browsers = Tab_Browsers(self)
-        main_layout.addWidget(self.tab_browsers)
+        #分隔主窗口和控制台
+        splitter = QSplitter(self)
+        splitter.addWidget(self.tab_browsers)
+        splitter.addWidget(self.debugview)
+        splitter.setOrientation(Qt.Vertical)
+        self.debugview.setVisible(False)
+        self.last_dev_page = None
+        main_layout.addWidget(splitter)
 
         self.setCentralWidget(self.main_widget)
         #读取配置
@@ -296,6 +334,19 @@ class BrowserWindow(QMainWindow):
     @pyqtSlot()
     def on_btn_refresh_click(self):
         self.tab_browsers.currentWidget().load(self.tab_browsers.currentWidget().url())
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_F12:
+            if self.debugview.isVisible():
+                self.debugview.setVisible(False)
+            else:
+                if not self.last_dev_page or self.last_dev_page != self.tab_browsers.currentWidget().page():
+                    self.debugview.page().setInspectedPage(self.tab_browsers.currentWidget().page())
+                self.debugview.show()
+            self.last_dev_page = self.tab_browsers.currentWidget().page()
+        elif event.key() == Qt.Key_F11:
+            pass
+                
 
 if __name__=='__main__':
     app = QApplication(sys.argv)
