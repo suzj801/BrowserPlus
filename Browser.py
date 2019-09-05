@@ -52,6 +52,23 @@ class Nav_LineEdit(QLineEdit):
                 self.parent.tab_browsers.createTab(self.text())
         QLineEdit.keyPressEvent(self, QKeyEvent)
 
+
+class QLabel_tooltip(QLabel):
+    def __init__(self, parent):
+        super(QLabel, self).__init__(parent)
+        self.parent = parent
+        self.setStyleSheet('color:#777;border-top-right-radius:5px;border-top:1px solid #777;border-right:1px solid #777;')
+        self.setFixedHeight(20)
+
+    def setText(self, text):
+        #need fix 没有实现chrome的功能 鼠标在最左下时链接地址往右显示
+        metric = QFontMetrics(self.font())
+        width = metric.width(text)+5
+        if width > self.parent.width()*0.5: #宽度不超过主窗口的一半
+            width = self.parent.width()*0.5
+        self.setFixedWidth(width)
+        return QLabel.setText(self, text)
+
 class MyWebView(QWebView):
     def __init__(self, parent):
         super(QWebView, self).__init__()
@@ -60,6 +77,8 @@ class MyWebView(QWebView):
         self.loadStarted.connect(self.on_webview_loadstarted)
         self.loadProgress.connect(self.on_webview_loadprogress)
         self.loadFinished.connect(self.on_webview_loadfinished)
+        self.page().linkHovered.connect(self.on_link_hovered)
+        self.page().networkAccessManager().sslErrors.connect(self.sslErrorHandler)
         #忽略js关闭窗口事件, chrome无父窗口的page无法使用js关闭窗口
 
     def test_local_file(self, url):
@@ -114,8 +133,8 @@ class MyWebView(QWebView):
         _load_url = self.url().toString()
         self.parent.text_url_navigation.setText(_load_url)
         webpage = self.page()
-        tab_current_index = self.parent.tab_browsers.currentIndex()
-        self.parent.tab_browsers.setTabText(tab_current_index, self.title())
+        tab_index = self.parent.tab_browsers.indexOf(self)
+        self.parent.tab_browsers.setTabText(tab_index, self.title())
         #加载图标
         if _load_url.startswith('http'):
             icon_url = _load_url + '/favicon.ico'
@@ -124,20 +143,33 @@ class MyWebView(QWebView):
                 req = requests.get(icon_url)
                 if req.status_code == 200:
                     pixmap.loadFromData(requests.get(icon_url).content)
-                    self.parent.tab_browsers.setTabIcon(tab_current_index, QIcon(pixmap))
+                    self.parent.tab_browsers.setTabIcon(tab_index, QIcon(pixmap))
             except:
                 pass
         if webpage.history().canGoBack():
             self.parent.btn_back.setEnabled(True)
         if webpage.history().canGoForward():
             self.parent.btn_forward.setEnabled(True)
-        if urllib.parse.urlparse(self.url().toString()).scheme:
+        parse_result = urllib.parse.urlparse(self.url().toString())
+        if parse_result.scheme in ['http', 'https']:
             self.parent.btn_fav.setEnabled(True)
+            #pyqt4没有cookie added/removed事件, 无法捕捉cookie变化, 所以每次刷新页面都dump一次cookie
+            if parse_result.netloc:
+                db.dump_cookies(parse_result.netloc, self.page().networkAccessManager().cookieJar().allCookies(), COOKIES_PATH)
 
-    @pyqtSlot(str)
-    def on_link_hovered(self, url):
+    @pyqtSlot(str, str, str)
+    def on_link_hovered(self, url, title, element):
+        #print(url, title, element)
         if url.startswith('http'):
-            QToolTip.showText(QCursor.pos(), url, None)
+            self.parent.tooltip.setText(url)
+            self.parent.tooltip.show()
+        else:
+            self.parent.tooltip.setVisible(False)
+
+    @pyqtSlot(QNetworkReply, list)
+    def sslErrorHandler(self, reply, errorList):
+        reply.ignoreSslErrors()
+        print("SSL error ignored")
 
 class Tab_Browsers(QTabWidget):
     def __init__(self, parent):
@@ -211,6 +243,11 @@ class BrowserWindow(QMainWindow):
         self.debugview.setVisible(False)
         self.last_dev_page = None
         main_layout.addWidget(splitter)
+        #webview tooltip
+        self.tooltip = QLabel_tooltip(self)
+        self.tooltip.move(0, self.height()-20)
+        self.tooltip.setVisible(False)
+        self.tooltip.raise_()
 
         self.setCentralWidget(self.main_widget)
         #读取配置
@@ -291,6 +328,14 @@ class BrowserWindow(QMainWindow):
                     self.debugview.setPage(self.tab_browsers.currentWidget().page())
                 self.debugview.show()
             self.last_dev_page = self.tab_browsers.currentWidget().page()
+
+    def resizeEvent(self, event):
+        #调整tooltip的位置
+        height = self.height()-20
+        horizontal_scrollbar = self.tab_browsers.currentWidget().page().mainFrame().scrollBarGeometry(Qt.Horizontal)
+        if horizontal_scrollbar: #减去水平滚动条的高度
+            height -= horizontal_scrollbar.height()
+        self.tooltip.move(0, height)
 
 if __name__=='__main__':
     app = QApplication(sys.argv)

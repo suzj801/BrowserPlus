@@ -5,6 +5,11 @@ import inspect
 import json
 from peewee import *
 
+APP_PATH = os.path.dirname(__file__)
+COOKIES_PATH = os.path.join(APP_PATH, '.cookies')
+if not os.path.isdir(COOKIES_PATH):
+    os.mkdir(COOKIES_PATH)
+
 def get_db(filepath):
     if os.path.isdir(os.path.realpath(os.path.dirname(filepath))):
         return SqliteDatabase(filepath)
@@ -74,11 +79,11 @@ class Cookie(BaseModel):
 def parse_url(method, *args, **kargs):
     def wrapper(*args, **kargs):
         if args:
-            if '?' in args[0]:
-                args = [args[0][:args[0].index('?')]] + [_arg for _arg in args[1:]]
+            if '/' in args[0]:
+                args = [args[0][:args[0].index('/')]] + [_arg for _arg in args[1:]]
         elif 'url' in kargs:
-            if '?' in kargs['url']:
-                kargs['url'] = kargs['url'][:kargs['url'].index('?')]
+            if '/' in kargs['url']:
+                kargs['url'] = kargs['url'][:kargs['url'].index('/')]
         return method(*args, **kargs)
     return wrapper
 
@@ -120,6 +125,46 @@ def list_cookie2(url):
     for row in Cookie.select().where(Cookie.url==url):
         _cookie_dict[row.key] = row.value
     return _cookie_dict
+
+@parse_url
+def dump_cookies(domain, cookies, path=''):
+    '''
+    dump cookie到文件
+    用于pyqt4
+    pyqt4 cookie都以文件形式存在路径中, 文件名为domain'''
+    path = path or COOKIES_PATH
+    domain = domain.replace('.', '_')
+    savepath = os.path.join(path, domain)
+    with open(savepath, 'w') as fp:
+        for c in cookies:
+            line = {
+                'domain': c.domain(),
+                'name': str(c.name(), 'utf-8'),
+                'value': str(c.value(), 'utf-8'),
+                'expires': c.expirationDate().toTime_t()
+            }
+            fp.write(json.dumps(line)+'\n')
+
+@parse_url
+def load_cookies(domain, path=''):
+    '''
+    从文件中读取cookie
+    用于pyqt4
+    pyqt4 cookie都以文件形式存在路径中, 文件名为domain'''
+    path = path or COOKIES_PATH
+    domain = domain.replace('.', '_')
+    savepath = os.path.join(path, domain)
+    if not os.path.isfile(savepath):
+        return {}
+    with open(savepath, 'r') as fp:
+        cookies = {}
+        for line in fp.readlines():
+            try:
+                _cookie = json.loads(line.strip())
+                cookies[_cookie['name']] = _cookie['value']
+            except:
+                continue
+        return cookies
 
 if __name__ == '__main__':
     db = get_db('database')
